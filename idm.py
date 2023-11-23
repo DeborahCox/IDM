@@ -491,7 +491,7 @@ class IDMProbe:
         logging.error(msg)
         self.printer.invoke_shutdown(msg)
         return self.reactor.NEVER
-        
+
     def request_stream_latency(self, latency):
         next_key = 0
         if self._stream_latency_requests:
@@ -541,7 +541,7 @@ class IDMProbe:
                         logging.error(msg)
                         self.gcode.respond_raw("!! " + msg + "\n")
                         self.model_temp = None
-                        
+
                     self.last_temp = temp
                     if temp:
                         self.measured_min = min(self.measured_min, temp)
@@ -650,7 +650,7 @@ class IDMProbe:
         if self.model is None:
             return None
         return self.model.freq_to_dist(freq, temp)
- 
+
     def get_status(self, eventtime):
         model = None
         if self.model is not None:
@@ -659,7 +659,7 @@ class IDMProbe:
             'last_sample': self.last_sample,
             'model': model,
         }
-        
+
     # Webhook handlers
 
     def _handle_req_status(self, web_request):
@@ -1589,7 +1589,7 @@ class IDMMeshHelper:
 
     def _is_valid_position(self, x, y):
         return self.min_x <= x <= self.max_x and self.min_y <= y <= self.min_y
-        
+
     def _sample_mesh(self, gcmd, path, speed, runs):
         cs = gcmd.get_float("CLUSTER_SIZE", self.cluster_size, minval=0.)
 
@@ -1606,7 +1606,7 @@ class IDMMeshHelper:
             (x, y, z) = sample['pos']
             x += xo
             y += yo
-            
+
             if math.isinf(d):
                 if self._is_valid_position(x, y):
                     invalid_samples[0] += 1
