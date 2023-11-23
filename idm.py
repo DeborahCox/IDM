@@ -1,4 +1,3 @@
-# Based upon the fantastic Beacon eddy current scanner support
 #
 # Copyright (C) 2020-2023 Matt Baker <baker.matt.j@gmail.com>
 # Copyright (C) 2020-2023 Lasse Dalegaard <dalegaard@gmail.com>
@@ -26,6 +25,7 @@ from mcu import MCU, MCU_trsync
 from clocksync import SecondarySync
 
 STREAM_BUFFER_LIMIT_DEFAULT = 100
+STREAM_TIMEOUT = 1.0
 
 class IDMProbe:
     def __init__(self, config):
@@ -44,6 +44,7 @@ class IDMProbe:
         self.trigger_dive_threshold = config.getfloat(
                 'trigger_dive_threshold', 1.)
         self.trigger_hysteresis = config.getfloat('trigger_hysteresis', 0.006)
+        self.z_settling_time = config.getint("z_settling_time", 5, minval=0)
 
         # If using paper for calibration, this would be .1mm
         self.cal_nozzle_z = config.getfloat('cal_nozzle_z', 0.1)
@@ -57,6 +58,7 @@ class IDMProbe:
         self.models = {}
         self.model_temp_builder = IDMTempModelBuilder.load(config)
         self.model_temp = None
+        self.fmin = None
         self.default_model_name = config.get('default_model_name', 'default')
         self.model_manager = ModelManager(self)
 
@@ -66,10 +68,13 @@ class IDMProbe:
         self.measured_max = 0.
 
         self.last_sample = None
+        self.hardware_failure = None
 
         self.mesh_helper = IDMMeshHelper.create(self, config)
 
         self._stream_en = 0
+        self._stream_timeout_timer = self.reactor.register_timer(
+                self._stream_timeout)
         self._stream_callbacks = {}
         self._stream_latency_requests = {}
         self._stream_buffer = []
@@ -133,6 +138,8 @@ class IDMProbe:
         self.idm_stream_cmd.send([0])
 
         self.model_temp = self.model_temp_builder.build_with_base(self)
+        if self.model_temp:
+            self.fmin = self.model_temp.fmin
         self.model = self.models.get(self.default_model_name, None)
         if self.model:
             self._apply_threshold()
@@ -141,6 +148,7 @@ class IDMProbe:
         constants = self._mcu.get_constants()
 
         self.sensor_freq = self._mcu._mcu_freq if self._mcu._mcu_freq < 20000000 else self._mcu._mcu_freq/2
+
         self.inv_adc_max = 1.0 / constants.get("ADC_MAX")
         self.temp_smooth_count = constants.get('IDM_ADC_SMOOTH_COUNT')
         self.thermistor = thermistor.Thermistor(10000., 0.)
@@ -197,6 +205,7 @@ class IDMProbe:
             raise self.printer.command_error("No IDM model loaded")
 
         speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.)
+        allow_faulty = gcmd.get_int('ALLOW_FAULTY_COORDINATE', 0) != 0
         lift_speed = self.get_lift_speed(gcmd)
         toolhead = self.printer.lookup_object('toolhead')
         curtime = self.reactor.monotonic()
@@ -205,7 +214,7 @@ class IDMProbe:
 
         self._start_streaming()
         try:
-            return self._probe(speed)
+            return self._probe(speed, allow_faulty=allow_faulty)
         finally:
             self._stop_streaming()
 
@@ -225,32 +234,40 @@ class IDMProbe:
         pos[2] = status['axis_minimum'][2]
         try:
             self.phoming.probing_move(self.mcu_probe, pos, speed)
-            samples = self._sample_printtime_sync(50)
+            self._sample_printtime_sync(self.z_settling_time)
         except self.printer.command_error as e:
             reason = str(e)
             if "Timeout during probing move" in reason:
                 reason += probe.HINT_TIMEOUT
             raise self.printer.command_error(reason)
 
-    def _sample(self, num_samples):
-        samples = self._sample_printtime_sync(5, num_samples)
-        return (median([s['dist'] for s in samples]), samples)
-
-    def _probe(self, speed, num_samples=10):
+    def _probe(self, speed, num_samples=10, allow_faulty=False):
         target = self.trigger_distance
         tdt = self.trigger_dive_threshold
-        (dist, samples) = self._sample(num_samples)
+        (dist, samples) = self._sample(5, num_samples)
+
+        x, y = samples[0]['pos'][0:2]
+        if self._is_faulty_coordinate(x, y, True):
+            msg = "Probing within a faulty area"
+            if not allow_faulty:
+                raise self.printer.command_error(msg)
+            else:
+                self.gcode.respond_raw("!! " + msg + "\n")
 
         if dist > target + tdt:
             # If we are above the dive threshold right now, we'll need to
             # do probing move and then re-measure
             self._probing_move_to_probing_height(speed)
-            (dist, samples) = self._sample(num_samples)
+            (dist, samples) = self._sample(self.z_settling_time, num_samples)
+        elif math.isinf(dist) and dist < 0:
+            # We were below the valid range of the model
+            msg = "Attempted to probe with Beacon below calibrated model range"
+            raise self.printer.command_error(msg)
         elif self.toolhead.get_position()[2] < target - tdt:
             # We are below the probing target height, we'll move to the
             # correct height and take a new sample.
             self._move_to_probing_height(speed)
-            (dist, samples) = self._sample(num_samples)
+            (dist, samples) = self._sample(self.z_settling_time, num_samples)
 
         pos = samples[0]['pos']
 
@@ -262,11 +279,19 @@ class IDMProbe:
     # Calibration routines
 
     def _start_calibration(self, gcmd):
+
+        allow_faulty = gcmd.get_int('ALLOW_FAULTY_COORDINATE', 0) != 0
         if gcmd.get("SKIP_MANUAL_PROBE", None) is not None:
             kin = self.toolhead.get_kinematics()
             kin_spos = {s.get_name(): s.get_commanded_position()
                         for s in kin.get_steppers()}
             kin_pos = kin.calc_position(kin_spos)
+            if self._is_faulty_coordinate(kin_pos[0], kin_pos[1]):
+                msg = "Calibrating within a faulty area"
+                if not allow_faulty:
+                    raise gcmd.error(msg)
+                else:
+                    gcmd.respond_raw("!! " + msg + "\n")
             self._calibrate(gcmd, kin_pos, False)
         else:
             curtime = self.printer.get_reactor().monotonic()
@@ -274,6 +299,14 @@ class IDMProbe:
             if 'xy' not in kin_status['homed_axes']:
                 raise self.printer.command_error("Must home X and Y "
                                                  "before calibration")
+
+            kin_pos = self.toolhead.get_position()
+            if self._is_faulty_coordinate(kin_pos[0], kin_pos[1]):
+                msg = "Calibrating within a faulty area"
+                if not allow_faulty:
+                    raise gcmd.error(msg)
+                else:
+                    gcmd.respond_raw("!! " + msg + "\n")
 
             forced_z = False
             if 'z' not in kin_status['homed_axes']:
@@ -309,6 +342,7 @@ class IDMProbe:
 
         # Move over to probe coordinate and pull out backlash
         curpos = self.toolhead.get_position()
+
         curpos[2] = cal_max_z + self.backlash_comp
         toolhead.manual_move(curpos, move_speed) # Up
         curpos[0] -= self.x_offset
@@ -386,7 +420,30 @@ class IDMProbe:
                                             "name '%s'" % (name,))
         self.models[name] = model
 
-    # Streaming mode
+    def _is_faulty_coordinate(self, x, y, add_offsets=False):
+        if not self.mesh_helper:
+            return False
+        return self.mesh_helper._is_faulty_coordinate(x, y, add_offsets)
+
+        # Streaming mode
+
+    def _check_hardware(self, sample):
+        if not self.hardware_failure:
+            msg = None
+            if sample['data'] == 0xFFFFFFF:
+                msg = "coil is shorted or not connected"
+            elif self.fmin is not None and sample['freq'] > 1.35 * self.fmin:
+                msg = "coil expected max frequency exceeded"
+            if msg:
+                msg = "IDM hardware issue: " + msg
+                self.hardware_failure = msg
+                logging.error(msg)
+                if self._stream_en:
+                    self.printer.invoke_shutdown(msg)
+                else:
+                    self.gcode.respond_raw("!! " + msg + "\n")
+        elif self._stream_en:
+            self.printer.invoke_shutdown(self.hardware_failure)
 
     def _enrich_sample_time(self, sample):
         clock = sample['clock'] = self._mcu.clock32_to_clock64(sample['clock'])
@@ -396,10 +453,13 @@ class IDMProbe:
         temp_adc = sample['temp'] / self.temp_smooth_count * self.inv_adc_max
         sample['temp'] = self.thermistor.calc_temp(temp_adc)
 
-    def _enrich_sample(self, sample):
+    def _enrich_sample_freq(self, sample):
         sample['data_smooth'] = self._data_filter.value()
-        freq = sample['freq'] = self.count_to_freq(sample['data_smooth'])
-        sample['dist'] = self.freq_to_dist(freq, sample['temp'])
+        sample['freq'] = self.count_to_freq(sample['data_smooth'])
+        self._check_hardware(sample)
+
+    def _enrich_sample(self, sample):
+        sample['dist'] = self.freq_to_dist(sample['freq'], sample['temp'])
         pos, vel = self._get_trapq_position(sample['time'])
 
         if pos is None:
@@ -410,15 +470,28 @@ class IDMProbe:
     def _start_streaming(self):
         if self._stream_en == 0:
             self.idm_stream_cmd.send([1])
+            curtime = self.reactor.monotonic()
+            self.reactor.update_timer(self._stream_timeout_timer,
+                    curtime + STREAM_TIMEOUT)
         self._stream_en += 1
         self._data_filter.reset()
         self._stream_flush()
     def _stop_streaming(self):
         self._stream_en -= 1
         if self._stream_en == 0:
+            self.reactor.update_timer(self._stream_timeout_timer,
+                    self.reactor.NEVER)
             self.idm_stream_cmd.send([0])
         self._stream_flush()
 
+    def _stream_timeout(self, eventtime):
+        if not self._stream_en:
+            return self.reactor.NEVER
+        msg = "Beacon sensor not receiving data"
+        logging.error(msg)
+        self.printer.invoke_shutdown(msg)
+        return self.reactor.NEVER
+        
     def request_stream_latency(self, latency):
         next_key = 0
         if self._stream_latency_requests:
@@ -452,10 +525,23 @@ class IDMProbe:
         while True:
             try:
                 samples = self._stream_samples_queue.get_nowait()
+                updated_timer = False
                 for sample in samples:
-                    self._enrich_sample_temp(sample)
+                    if not updated_timer:
+                        curtime = self.reactor.monotonic()
+                        self.reactor.update_timer(self._stream_timeout_timer,
+                                curtime + STREAM_TIMEOUT)
+                        updated_timer = True
 
+                    self._enrich_sample_temp(sample)
                     temp = sample['temp']
+                    if self.model_temp is not None and not (-40 < temp < 180):
+                        msg = ("IDM temperature sensor faulty(read %.2f C),"
+                                " disabling temperaure compensation" % (temp,))
+                        logging.error(msg)
+                        self.gcode.respond_raw("!! " + msg + "\n")
+                        self.model_temp = None
+                        
                     self.last_temp = temp
                     if temp:
                         self.measured_min = min(self.measured_min, temp)
@@ -463,10 +549,11 @@ class IDMProbe:
 
                     self._enrich_sample_time(sample)
                     self._data_filter.update(sample['time'], sample['data'])
+                    self._enrich_sample_freq(sample)
 
                     if len(self._stream_callbacks) > 0:
                         self._enrich_sample(sample)
-                        for cb in self._stream_callbacks.values():
+                        for cb in list(self._stream_callbacks.values()):
                             cb(sample)
             except queue.Empty:
                 return
@@ -529,6 +616,10 @@ class IDMProbe:
         else:
             return samples
 
+    def _sample(self, skip, count):
+        samples = self._sample_printtime_sync(skip, count)
+        return (median([s['dist'] for s in samples]), samples)
+
     def _sample_async(self, count=1):
         samples = []
         def cb(sample):
@@ -538,6 +629,7 @@ class IDMProbe:
 
         with self.streaming_session(cb, latency=count) as ss:
             ss.wait()
+
         if count == 1:
             return samples[0]
         else:
@@ -558,11 +650,16 @@ class IDMProbe:
         if self.model is None:
             return None
         return self.model.freq_to_dist(freq, temp)
-        
+ 
     def get_status(self, eventtime):
+        model = None
+        if self.model is not None:
+            model = self.model.name
         return {
-            'last_sample': self.last_sample
+            'last_sample': self.last_sample,
+            'model': model,
         }
+        
     # Webhook handlers
 
     def _handle_req_status(self, web_request):
@@ -604,6 +701,7 @@ class IDMProbe:
         target = gcmd.get_float('Z', self.trigger_distance)
 
         num_samples = gcmd.get_int('SAMPLES', 20)
+        wait = self.z_settling_time
 
         samples_up = []
         samples_down = []
@@ -613,7 +711,7 @@ class IDMProbe:
         try:
             self._start_streaming()
 
-            (cur_dist, _samples) = self._sample(10)
+            (cur_dist, _samples) = self._sample(wait, 10)
             pos = self.toolhead.get_position()
             missing = target - cur_dist
             target = pos[2] + missing
@@ -628,7 +726,7 @@ class IDMProbe:
                 liftpos = [None, None, target]
                 self.toolhead.manual_move(liftpos, lift_speed)
                 self.toolhead.wait_moves()
-                (dist, _samples) = self._sample(10)
+                (dist, _samples) = self._sample(wait, 10)
                 {-1: samples_up, 1: samples_down}[next_dir].append(dist)
                 next_dir = next_dir * -1
 
@@ -703,6 +801,7 @@ class IDMProbe:
         lift_speed = self.get_lift_speed(gcmd)
         sample_count = gcmd.get_int("SAMPLES", 10, minval=1)
         sample_retract_dist = gcmd.get_float("SAMPLE_RETRACT_DIST", 0)
+        allow_faulty = gcmd.get_int('ALLOW_FAULTY_COORDINATE', 0) != 0
         pos = self.toolhead.get_position()
         gcmd.respond_info("PROBE_ACCURACY at X:%.3f Y:%.3f Z:%.3f"
                           " (samples=%d retract=%.3f"
@@ -718,7 +817,7 @@ class IDMProbe:
         self.multi_probe_begin()
         positions = []
         while len(positions) < sample_count:
-            pos = self._probe(speed)
+            pos = self._probe(speed, allow_faulty=allow_faulty)
             positions.append(pos)
             self.toolhead.manual_move(liftpos, lift_speed)
         self.multi_probe_end()
@@ -806,7 +905,14 @@ class IDMModel:
                     "the printer." % (self.name,))
 
     def freq_to_dist_raw(self, freq):
-        return float(self.poly(1/freq) - self.offset)
+        [begin, end] = self.poly.domain
+        invfreq = 1/freq
+        if invfreq > end:
+            return float('inf')
+        elif invfreq < begin:
+            return float('-inf')
+        else:
+            return float(self.poly(invfreq) - self.offset)
 
     def freq_to_dist(self, freq, temp):
         if self.temp is not None and \
@@ -816,6 +922,10 @@ class IDMModel:
         return self.freq_to_dist_raw(freq)
 
     def dist_to_freq_raw(self, dist, max_e=0.00000001):
+        if dist < self.min_z or dist > self.max_z:
+            msg = ("Attempted to map out-of-range distance %f, valid range "
+                    "[%.3f, %.3f]" % (dist, self.min_z, self.max_z))
+            raise self.idm.printer.command_error(msg)
         dist += self.offset
         [begin, end] = self.poly.domain
         for _ in range(0, 50):
@@ -1172,8 +1282,11 @@ class IDMEndstopWrapper:
 
         # After homing Z we perform a measurement and adjust the toolhead
         # kinematic position.
-        samples = self.idm._sample_printtime_sync(5, 10)
-        dist = median([s['dist'] for s in samples])
+        (dist, samples) = self.idm._sample(self.idm.z_settling_time, 10)
+        if math.isinf(dist):
+            logging.error("Post-homing adjustment measured samples %s", samples)
+            raise self.idm.printer.command_error(
+                    "Toolhead stopped below model range")
         homing_state.set_homed_position([None, None, dist])
 
     def get_mcu(self):
@@ -1208,6 +1321,7 @@ class IDMEndstopWrapper:
 
         self.is_homing = True
         self.idm._apply_threshold()
+        self.idm._sample_async()
         clock = self._mcu.print_time_to_clock(print_time)
         rest_ticks = self._mcu.print_time_to_clock(print_time+rest_time) - clock
         self._rest_ticks = rest_ticks
@@ -1473,6 +1587,9 @@ class IDMMeshHelper:
                 self.toolhead.manual_move([x, y, None], speed)
         self.toolhead.wait_moves()
 
+    def _is_valid_position(self, x, y):
+        return self.min_x <= x <= self.max_x and self.min_y <= y <= self.min_y
+        
     def _sample_mesh(self, gcmd, path, speed, runs):
         cs = gcmd.get_float("CLUSTER_SIZE", self.cluster_size, minval=0.)
 
@@ -1481,14 +1598,19 @@ class IDMMeshHelper:
 
         clusters = {}
         total_samples = [0]
+        invalid_samples = [0]
 
         def cb(sample):
             total_samples[0] += 1
-
+            d = sample['dist']
             (x, y, z) = sample['pos']
             x += xo
             y += yo
-            d = sample['dist']
+            
+            if math.isinf(d):
+                if self._is_valid_position(x, y):
+                    invalid_samples[0] += 1
+                return
 
             # Calculate coordinate of the cluster we are in
             xi = int(round((x - min_x) / self.step_x))
@@ -1515,11 +1637,17 @@ class IDMMeshHelper:
 
         gcmd.respond_info("Sampled %d total points over %d runs" %
                           (total_samples[0], runs))
+        if invalid_samples[0]:
+            gcmd.respond_info("!! Encountered %d invalid samples!" % (invalid_samples[0],))
         gcmd.respond_info("Samples binned in %d clusters" % (len(clusters),))
 
         return clusters
 
-    def _is_faulty_coordinate(self, x, y):
+    def _is_faulty_coordinate(self, x, y, add_offsets=False):
+        if add_offsets:
+            xo, yo = self.idm.x_offset, self.idm.y_offset
+            x += xo
+            y += yo
         for r in self.faulty_regions:
             if r.is_point_within(x, y):
                 return True
