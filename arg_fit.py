@@ -1,7 +1,6 @@
 # 打开文件
 from scipy.optimize import curve_fit
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings("ignore")
@@ -80,9 +79,8 @@ def data_process(path):
         for line in lines:
             data.append(line.split(','))
     file.close()
-    full_data=pd.DataFrame(data[1:-1],columns=data[0])
-    temp=np.array(full_data['temp']).astype(np.float32)
-    freq=np.array(full_data['freq']).astype(np.float32)
+    temp=np.array(data[1:-1],dtype=float)[:,5]
+    freq=np.array(data[1:-1],dtype=float)[:,3]
     freq=freq[::100]
     temp=temp[::100]
     plt.plot(temp[10:],freq[10:])
@@ -117,9 +115,8 @@ for path in paths:
         for line in lines:
             data.append(line.split(','))
     file.close()
-    full_data=pd.DataFrame(data[1:-1],columns=data[0])
-    temp=np.array(full_data['temp']).astype(np.float32)
-    freq=np.array(full_data['freq']).astype(np.float32)
+    temp=np.array(data[1:-1],dtype=float)[:,5]
+    freq=np.array(data[1:-1],dtype=float)[:,3]
     freq=freq[::100]
     temp=temp[::100]
     result0=[]

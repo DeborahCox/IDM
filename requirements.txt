@@ -1,4 +1,3 @@
 # klipper python virtual environment requirements for IDM
 numpy>=1.16.6
-pandas>=1.4.2
 scipy>=1.10.0
