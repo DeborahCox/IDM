@@ -2,6 +2,7 @@
 from scipy.optimize import curve_fit
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 import warnings
 warnings.filterwarnings("ignore")
 class TempModel:
@@ -49,7 +50,6 @@ def area_find(temp,freq):
     i=j=100
     i_flag=True
     j_flag=True
-    threshold=250
     for c in range(100):
         if(i_flag):
             i=i+100
@@ -79,8 +79,9 @@ def data_process(path):
         for line in lines:
             data.append(line.split(','))
     file.close()
-    temp=np.array(data[1:-1],dtype=float)[:,5]
-    freq=np.array(data[1:-1],dtype=float)[:,3]
+    full_data=pd.DataFrame(data[1:-1],columns=data[0])
+    temp=np.array(full_data['temp']).astype(np.float32)
+    freq=np.array(full_data['freq']).astype(np.float32)
     freq=freq[::100]
     temp=temp[::100]
     plt.plot(temp[10:],freq[10:])
@@ -92,17 +93,16 @@ plt.figure(figsize=(25, 15))
 paths=['./data1','./data2','./data3','./data4']
 datas=[]
 num=241
-try:
-    for path in paths:
-        plt.subplot(num)
-        num+=1
-        datas.append(data_process(path))
-except:
-    print("check if the data is prepared!")
+threshold=int(input('threshold set(recommend start from 250):\n'))
+for path in paths:
+    plt.subplot(num)
+    num+=1
+    datas.append(data_process(path))
+
 #反向求值
 model=TempModel(1,-2.1429828e-05,-1.8980091e-10,3.6738370e-16,2943053.84,20.33)
 p0=[-2.1429828e-05,-1.8980091e-10,3.6738370e-16]
-params, params_covariance = curve_fit(fit,np.arange(5,80,0.01),np.hstack(datas),p0=p0,maxfev=1000,ftol=1e-10,xtol=1e-10)
+params, params_covariance = curve_fit(fit,np.arange(5,80,0.01),np.hstack(datas),p0=p0,maxfev=1000000,ftol=1e-10,xtol=1e-10)
 for path in paths:
     plt.subplot(num)
     num+=1
@@ -115,8 +115,9 @@ for path in paths:
         for line in lines:
             data.append(line.split(','))
     file.close()
-    temp=np.array(data[1:-1],dtype=float)[:,5]
-    freq=np.array(data[1:-1],dtype=float)[:,3]
+    full_data=pd.DataFrame(data[1:-1],columns=data[0])
+    temp=np.array(full_data['temp']).astype(np.float32)
+    freq=np.array(full_data['freq']).astype(np.float32)
     freq=freq[::100]
     temp=temp[::100]
     result0=[]
