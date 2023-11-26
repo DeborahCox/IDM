@@ -93,12 +93,14 @@ plt.figure(figsize=(25, 15))
 paths=['./data1','./data2','./data3','./data4']
 datas=[]
 num=241
-threshold=int(input('threshold set(recommend start from 250):\n'))
-for path in paths:
+threshold=int(input('threshold set(recommend start from 250):\n请输入阈值设置(默认推荐250):\n'))
+try:
+    for path in paths:
     plt.subplot(num)
     num+=1
     datas.append(data_process(path))
-
+except:
+    print("please make sure you have move the 4 data file to IDM folder\n请确认你有把4个文件拷到IDM文件夹内")
 #反向求值
 model=TempModel(1,-2.1429828e-05,-1.8980091e-10,3.6738370e-16,2943053.84,20.33)
 p0=[-2.1429828e-05,-1.8980091e-10,3.6738370e-16]
