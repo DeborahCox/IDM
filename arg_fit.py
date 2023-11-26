@@ -96,9 +96,9 @@ num=241
 threshold=int(input('threshold set(recommend start from 250):\n请输入阈值设置(默认推荐250):\n'))
 try:
     for path in paths:
-    plt.subplot(num)
-    num+=1
-    datas.append(data_process(path))
+        plt.subplot(num)
+        num+=1
+        datas.append(data_process(path))
 except:
     print("please make sure you have move the 4 data file to IDM folder\n请确认你有把4个文件拷到IDM文件夹内")
 #反向求值
