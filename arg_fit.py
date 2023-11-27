@@ -133,4 +133,5 @@ def main():
     print('tc_tcc:'+str(params[0])+'\ntc_tcfl:'+str(params[1])+'\ntc_tctl:'+str(params[2]))
 
 if __name__== "__main__" :
+    threshold＝250
     main()
