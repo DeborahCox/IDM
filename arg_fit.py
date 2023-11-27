@@ -89,7 +89,7 @@ def data_process(path):
     plt.plot(temp,line_fit(temp,linear_params[0],linear_params[1],linear_params[2]))
     data0=line_fit(np.arange(5,80,0.01),linear_params[0],linear_params[1],linear_params[2])
     return data0
-def main():
+while(1):
     plt.figure(figsize=(25, 15))
     paths=['./data1','./data2','./data3','./data4']
     datas=[]
@@ -102,7 +102,7 @@ def main():
             datas.append(data_process(path))
     except:
         print("please make sure you have move the 4 data file to IDM folder\n请确认你有把4个文件拷到IDM文件夹内")
-        return
+        break
     #反向求值
     p0=[-2.1429828e-05,-1.8980091e-10,3.6738370e-16]
     params, params_covariance = curve_fit(fit,np.arange(5,80,0.01),np.hstack(datas),p0=p0,maxfev=1000000,ftol=1e-10,xtol=1e-10)
@@ -130,8 +130,4 @@ def main():
     plt.savefig('fit.png')
     print('fit result:')
     print('tc_tcc:'+str(params[0])+'\ntc_tcfl:'+str(params[1])+'\ntc_tctl:'+str(params[2]))
-
-if __name__== "__main__" :
-    threshold=250
-    model=TempModel(1,-2.1429828e-05,-1.8980091e-10,3.6738370e-16,2943053.84,20.33)
-    main()
+    break
