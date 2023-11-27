@@ -104,7 +104,6 @@ def main():
         print("please make sure you have move the 4 data file to IDM folder\n请确认你有把4个文件拷到IDM文件夹内")
         return
     #反向求值
-    model=TempModel(1,-2.1429828e-05,-1.8980091e-10,3.6738370e-16,2943053.84,20.33)
     p0=[-2.1429828e-05,-1.8980091e-10,3.6738370e-16]
     params, params_covariance = curve_fit(fit,np.arange(5,80,0.01),np.hstack(datas),p0=p0,maxfev=1000000,ftol=1e-10,xtol=1e-10)
     for path in paths:
@@ -134,4 +133,5 @@ def main():
 
 if __name__== "__main__" :
     threshold=250
+    model=TempModel(1,-2.1429828e-05,-1.8980091e-10,3.6738370e-16,2943053.84,20.33)
     main()
