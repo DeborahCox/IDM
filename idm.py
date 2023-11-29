@@ -261,7 +261,7 @@ class IDMProbe:
             (dist, samples) = self._sample(self.z_settling_time, num_samples)
         elif math.isinf(dist) and dist < 0:
             # We were below the valid range of the model
-            msg = "Attempted to probe with Beacon below calibrated model range"
+            msg = "Attempted to probe with IDM below calibrated model range"
             raise self.printer.command_error(msg)
         elif self.toolhead.get_position()[2] < target - tdt:
             # We are below the probing target height, we'll move to the
