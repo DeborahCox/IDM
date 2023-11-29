@@ -487,7 +487,7 @@ class IDMProbe:
     def _stream_timeout(self, eventtime):
         if not self._stream_en:
             return self.reactor.NEVER
-        msg = "Beacon sensor not receiving data"
+        msg = "IDM sensor not receiving data"
         logging.error(msg)
         self.printer.invoke_shutdown(msg)
         return self.reactor.NEVER
