@@ -25,7 +25,7 @@ from mcu import MCU, MCU_trsync
 from clocksync import SecondarySync
 
 STREAM_BUFFER_LIMIT_DEFAULT = 100
-STREAM_TIMEOUT = 1.0
+STREAM_TIMEOUT = 2.0
 
 class IDMProbe:
     def __init__(self, config):
