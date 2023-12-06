@@ -12,6 +12,7 @@ fi
 
 # install idm requirements to env
 echo "idm: installing python requirements to env, this may take 10+ minutes."
+sudo apt-get install g++ gfortran
 "${KENV}/bin/pip" install -r "${BKDIR}/requirements.txt"
 
 # update link to idm.py
