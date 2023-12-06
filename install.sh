@@ -17,6 +17,7 @@ sudo apt-get install g++ gfortran
 
 # update link to idm.py
 echo "idm: linking klippy to idm.py."
+sudo apt-get install g++ gfortran
 if [ -e "${KDIR}/klippy/extras/idm.py" ]; then
     rm "${KDIR}/klippy/extras/idm.py"
 fi
